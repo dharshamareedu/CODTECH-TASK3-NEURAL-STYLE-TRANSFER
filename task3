@@ -1,0 +1,81 @@
+import torch
+import torch.optim as optim
+import torchvision.transforms as transforms
+import torchvision.models as models
+from PIL import Image
+import matplotlib.pyplot as plt
+import copy
+
+def load_image(image_path, max_size=512):
+    """Loads and transforms an image for the neural style transfer model."""
+    image = Image.open(image_path).convert('RGB')
+    transform = transforms.Compose([
+        transforms.Resize((max_size, max_size)),
+        transforms.ToTensor()
+    ])
+    return transform(image).unsqueeze(0)
+
+def imshow(tensor, title=None):
+    """Displays a tensor image."""
+    image = tensor.cpu().clone().squeeze(0)
+    image = transforms.ToPILImage()(image)
+    plt.imshow(image)
+    if title:
+        plt.title(title)
+    plt.show()
+
+def get_features(image, model, layers):
+    """Extracts features from selected layers of the model."""
+    features = {}
+    x = image
+    for name, layer in model._modules.items():
+        x = layer(x)
+        if name in layers:
+            features[layers[name]] = x
+    return features
+
+def gram_matrix(tensor):
+    """Computes the Gram matrix for a given tensor."""
+    _, d, h, w = tensor.size()
+    tensor = tensor.view(d, h * w)
+    return torch.mm(tensor, tensor.t())
+
+def neural_style_transfer(content_path, style_path, num_steps=300, style_weight=1e6, content_weight=1):
+    """Applies Neural Style Transfer to blend the content and style images."""
+    content = load_image(content_path)
+    style = load_image(style_path)
+    
+    model = models.vgg19(pretrained=True).features.eval()
+    layers = {'0': 'conv1_1', '5': 'conv2_1', '10': 'conv3_1', '19': 'conv4_1', '28': 'conv5_1'}
+    content_features = get_features(content, model, layers)
+    style_features = get_features(style, model, layers)
+    style_grams = {layer: gram_matrix(style_features[layer]) for layer in style_features}
+    
+    target = content.clone().requires_grad_(True)
+    optimizer = optim.Adam([target], lr=0.003)
+    
+    for step in range(num_steps):
+        target_features = get_features(target, model, layers)
+        content_loss = torch.nn.functional.mse_loss(target_features['conv4_1'], content_features['conv4_1'])
+        style_loss = 0
+        
+        for layer in style_features:
+            target_gram = gram_matrix(target_features[layer])
+            style_gram = style_grams[layer]
+            layer_loss = torch.nn.functional.mse_loss(target_gram, style_gram)
+            style_loss += layer_loss / (target_gram.shape[0] * target_gram.shape[1])
+        
+        total_loss = content_weight * content_loss + style_weight * style_loss
+        optimizer.zero_grad()
+        total_loss.backward()
+        optimizer.step()
+        
+        if step % 50 == 0:
+            print(f"Step {step}: Total Loss: {total_loss.item()}")
+    
+    imshow(target, title="Styled Image")
+
+if __name__ == "__main__":
+    content_image_path = "content.jpg"  # Replace with actual content image path
+    style_image_path = "style.jpg"  # Replace with actual style image path
+    neural_style_transfer(content_image_path, style_image_path)
